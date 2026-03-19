@@ -17,6 +17,27 @@ PROCESSED_DIR = os.path.join(BASE_DIR, 'data', 'processed')
 DEGRADATION_CURVES = {}
 MAX_TYRE_LIFE = {}
 
+# Auto-load curves from pkl on import
+def _load_curves():
+    pkl_path = os.path.join(MODEL_DIR, 'tyre_curves.pkl')
+    try:
+        if os.path.exists(pkl_path):
+            data = joblib.load(pkl_path)
+            DEGRADATION_CURVES.update(
+                data.get('DEGRADATION_CURVES', {}))
+            MAX_TYRE_LIFE.update(
+                data.get('MAX_TYRE_LIFE', {}))
+            logger.info(
+                f"Tyre curves loaded: "
+                f"{list(DEGRADATION_CURVES.keys())}")
+        else:
+            logger.warning(
+                f"tyre_curves.pkl not found at {pkl_path}")
+    except Exception as e:
+        logger.warning(f"Could not load tyre curves: {e}")
+
+_load_curves()
+
 def predict_lap_delta(compound_encoded, tyre_age):
     if compound_encoded not in DEGRADATION_CURVES:
         return 0.0
