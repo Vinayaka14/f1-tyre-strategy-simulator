@@ -23,7 +23,7 @@ or stay out, using two complementary systems:
 ## Features
 
 ### Real Race Replay Mode
-- Select any race from 2022–2024 seasons
+- Select any race from 2023–2024 seasons
 - Scrub lap-by-lap through actual race data
 - Live event overrides: Safety Car, VSC, 
   sudden rain, competitor pit stops
