@@ -395,7 +395,8 @@ def get_actual_gap_context(session_laps, driver, lap_number):
     }
 
 
-def render_position_bar(session_laps, lap_number, selected_driver):
+def render_position_bar(session_laps, lap_number,
+                        selected_driver, driver_compound='MEDIUM'):
     """Renders race position bar for all drivers at the given lap."""
     TEAM_COLORS = {
         'VER': '#3671C6', 'PER': '#3671C6',
@@ -509,25 +510,35 @@ def render_position_bar(session_laps, lap_number, selected_driver):
     st.plotly_chart(fig, use_container_width=True)
 
     leg1, leg2, leg3, leg4, leg5 = st.columns(5)
-    with leg1:
-        st.markdown("<span style='color:#E8002D'>■</span> "
-                    "<span style='color:#888;font-size:0.75rem'>Soft</span>",
-                    unsafe_allow_html=True)
-    with leg2:
-        st.markdown("<span style='color:#FFF200'>■</span> "
-                    "<span style='color:#888;font-size:0.75rem'>Medium</span>",
-                    unsafe_allow_html=True)
-    with leg3:
-        st.markdown("<span style='color:#FFFFFF'>■</span> "
-                    "<span style='color:#888;font-size:0.75rem'>Hard</span>",
-                    unsafe_allow_html=True)
-    with leg4:
-        st.markdown("<span style='color:#43B02A'>■</span> "
-                    "<span style='color:#888;font-size:0.75rem'>Inter</span>",
-                    unsafe_allow_html=True)
+    COMPOUND_DISPLAY = {
+        'SOFT': ('#E8002D', 'Soft'),
+        'MEDIUM': ('#FFF200', 'Medium'),
+        'HARD': ('#FFFFFF', 'Hard'),
+        'INTERMEDIATE': ('#43B02A', 'Inter'),
+    }
+    cols = [leg1, leg2, leg3, leg4, leg5]
+    items = list(COMPOUND_DISPLAY.items())
+    for i, (cmp, (color, label)) in enumerate(items):
+        highlight = (cmp == driver_compound)
+        style = (
+            "font-weight:bold;font-size:0.8rem;"
+            if highlight else "font-size:0.75rem;"
+        )
+        marker = "◉" if highlight else "■"
+        with cols[i]:
+            st.markdown(
+                f"<span style='color:{color}'>{marker}</span> "
+                f"<span style='color:{'white' if highlight else '#888'};"
+                f"{style}'>{label}"
+                f"{'  ← now' if highlight else ''}</span>",
+                unsafe_allow_html=True
+            )
     with leg5:
-        st.markdown("<span style='color:#888;font-size:0.75rem'>◉ = selected driver</span>",
-                    unsafe_allow_html=True)
+        st.markdown(
+            "<span style='color:#888;font-size:0.75rem'>"
+            "◉ = on track now / selected</span>",
+            unsafe_allow_html=True
+        )
 
 
 def render_race_history(session_data, driver):
@@ -932,12 +943,16 @@ with st.spinner(f"Loading {grand_prix} {season}..."):
 
 st.session_state['loaded_session_data'] = session_data
 
-# Build a key representing the current race selection
-# Only sync actual values to widgets when selection changes
+# Track whether selection changed this render
 current_selection_key = f"{season}_{grand_prix}_{driver}_{lap_number}"
+selection_changed = (
+    st.session_state.get('_last_selection_key')
+    != current_selection_key
+)
 
 if session_data is not None:
     try:
+        # --- Gap context ---
         gap_ctx = get_actual_gap_context(
             session_data['laps'], driver, lap_number)
         if gap_ctx:
@@ -946,17 +961,14 @@ if session_data is not None:
             st.session_state['actual_position'] = gap_ctx['position']
             st.session_state['actual_driver_ahead'] = gap_ctx['driver_ahead']
             st.session_state['actual_driver_behind'] = gap_ctx['driver_behind']
-
-            # Only push to widget keys when selection changes
-            # This prevents overwriting user edits on every render
-            if st.session_state.get(
-                '_last_selection_key') != current_selection_key:
-                st.session_state['actual_gap_ahead'] = float(
+            # Sync gap widgets only when selection changes
+            if selection_changed:
+                st.session_state['gap_ahead_override'] = float(
                     gap_ctx['gap_ahead'])
-                st.session_state['actual_gap_behind'] = float(
+                st.session_state['gap_behind_override'] = float(
                     gap_ctx['gap_behind'])
 
-        # Compute actual lap_time_delta
+        # --- Lap delta + compound ---
         drv_laps_preview = session_data['laps'][
             (session_data['laps']['Driver'] == driver) &
             (session_data['laps']['LapTime_s'].notna())
@@ -973,29 +985,44 @@ if session_data is not None:
                     drv_laps_preview['LapNumber'] == nearest_l]
 
             if not cur.empty:
+                # Lap time delta
                 cur_time = float(cur['LapTime_s'].iloc[0])
-                tyre_life = int(
-                    cur['TyreLife'].iloc[0]
-                ) if pd.notna(cur['TyreLife'].iloc[0]) else 1
+                tyre_life = int(cur['TyreLife'].iloc[0]) \
+                    if pd.notna(cur['TyreLife'].iloc[0]) else 1
                 stint_start_lap = lap_number - tyre_life + 1
                 stint = drv_laps_preview[
                     drv_laps_preview['LapNumber'] >=
                     stint_start_lap]['LapTime_s']
-                best_in_stint = float(
-                    stint.min()) if not stint.empty else cur_time
-                actual_delta_val = max(
-                    0.0, cur_time - best_in_stint)
-                st.session_state['actual_lap_delta'] = round(
-                    actual_delta_val, 3)
+                best_in_stint = float(stint.min()) \
+                    if not stint.empty else cur_time
+                actual_delta_val = round(
+                    max(0.0, cur_time - best_in_stint), 3)
+                st.session_state['actual_lap_delta'] = actual_delta_val
 
-                # Only update display reference, not widget key
-                if st.session_state.get(
-                    '_last_selection_key') != current_selection_key:
-                    st.session_state['actual_lap_delta'] = round(
-                        actual_delta_val, 3)
+                # Always sync delta widget on every render
+                # (user can override freely, but it resets
+                #  when they change selection)
+                if selection_changed:
+                    st.session_state['lap_delta_override'] = \
+                        actual_delta_val
 
-        # Record that we've synced for this selection
-        st.session_state['_last_selection_key'] = current_selection_key
+                # Actual compound for this driver at this lap
+                actual_cmp = str(cur['Compound'].iloc[0]) \
+                    if pd.notna(cur['Compound'].iloc[0]) \
+                    else 'MEDIUM'
+                # Store so sidebar selectbox can read it
+                st.session_state['_actual_compound'] = actual_cmp
+
+                # CRITICAL: reset compound_override when
+                # selection changes so it shows the new
+                # driver's actual compound, not the old one
+                if selection_changed:
+                    st.session_state['compound_override'] = actual_cmp
+
+        # Stamp the selection key AFTER syncing
+        if selection_changed:
+            st.session_state['_last_selection_key'] = \
+                current_selection_key
 
     except Exception:
         pass
@@ -1007,40 +1034,31 @@ if session_data is None:
 # Section 4b — Tyre compound override
 st.sidebar.markdown("### 🏎 Tyre Compound")
 
-# Determine actual compound from race data
-actual_compound = 'MEDIUM'
-try:
-    if 'race_data_cache' in st.session_state:
-        cached = st.session_state.get('loaded_session_data')
-        if cached is not None:
-            drv_lap = cached['laps'][
-                (cached['laps']['Driver'] == st.session_state.get('driver', 'VER')) &
-                (cached['laps']['LapNumber'] == st.session_state.get('lap_number', 30))
-            ]
-            if not drv_lap.empty and pd.notna(drv_lap['Compound'].iloc[0]):
-                actual_compound = str(drv_lap['Compound'].iloc[0])
-except Exception:
-    pass
+# Read actual compound computed in sync block above
+# Falls back to MEDIUM if nothing loaded yet
+actual_compound = st.session_state.get('_actual_compound', 'MEDIUM')
 
 COMPOUNDS = ['SOFT', 'MEDIUM', 'HARD', 'INTERMEDIATE', 'WET']
-default_idx = COMPOUNDS.index(actual_compound) if actual_compound in COMPOUNDS else 1
 
 compound_override = st.sidebar.selectbox(
     "Tyre compound",
     COMPOUNDS,
-    index=default_idx,
     key="compound_override",
     help="Pre-filled with actual race compound. Change to simulate a different tyre."
 )
 
-# Only show actual compound reference when Real Race tab has loaded data
+# Reference note
 if st.session_state.get('loaded_session_data') is not None:
     if actual_compound != compound_override:
-        st.sidebar.caption(f"📌 Actual compound: **{actual_compound}** → simulating **{compound_override}**")
+        st.sidebar.caption(
+            f"📌 Actual: **{actual_compound}** → simulating **{compound_override}**"
+        )
     else:
         st.sidebar.caption(f"📌 Actual compound: **{actual_compound}**")
 else:
-    st.sidebar.caption("📌 Load a race in Real Race tab to see actual compound reference")
+    st.sidebar.caption(
+        "📌 Load a race to see actual compound"
+    )
 
 
 # Section 4 — Live Event Overrides
@@ -1324,15 +1342,27 @@ with tab1:
 
             # ── Panel B2: Position Bar ──
             st.markdown("#### 🏎 Race Positions")
-            render_position_bar(session_data['laps'], effective_lap, driver)
+            render_position_bar(
+                session_data['laps'],
+                effective_lap,
+                driver,
+                driver_compound=lap_data['compound']
+            )
 
             st.markdown("---")
 
             # ── Panel C: Tyre Simulation ──
             st.markdown("### 📈 Tyre Simulation")
-            st.caption("Predicted pace degradation forward from current state. Reactive to all sidebar changes.")
+            st.caption(
+                "Predicted pace degradation from current tyre age. "
+                "Updates when you change driver, lap, or compound.")
+            # Use the sidebar compound_override if it differs
+            # from actual (user is simulating a different compound)
+            # Otherwise use the actual compound from race data
+            sim_compound = st.session_state.get(
+                'compound_override', lap_data['compound'])
             render_tyre_simulation(
-                compound_selected=st.session_state.get('compound_override', lap_data['compound']),
+                compound_selected=sim_compound,
                 tyre_age_current=lap_data['tyre_age'],
                 base_laptime=lap_data.get('current_laptime', 90.0),
                 lap_number=effective_lap,
