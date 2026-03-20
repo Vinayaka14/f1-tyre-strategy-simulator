@@ -931,46 +931,74 @@ with st.spinner(f"Loading {grand_prix} {season}..."):
     session_data = load_race_session(season, grand_prix)
 
 st.session_state['loaded_session_data'] = session_data
-    
-if session_data is not None:
-        try:
-            gap_ctx = get_actual_gap_context(session_data['laps'], driver, lap_number)
-            if gap_ctx:
-                st.session_state['actual_gap_ahead'] = gap_ctx['gap_ahead']
-                st.session_state['actual_gap_behind'] = gap_ctx['gap_behind']
-                st.session_state['actual_position'] = gap_ctx['position']
-                st.session_state['actual_driver_ahead'] = gap_ctx['driver_ahead']
-                st.session_state['actual_driver_behind'] = gap_ctx['driver_behind']
-                
-                # Update override widgets directly
-                st.session_state['gap_ahead_override'] = float(gap_ctx['gap_ahead'])
-                st.session_state['gap_behind_override'] = float(gap_ctx['gap_behind'])
 
-            # --- NEW: Compute actual lap_time_delta for syncing ---
-            drv_laps_preview = session_data['laps'][
-                (session_data['laps']['Driver'] == driver) &
-                (session_data['laps']['LapTime_s'].notna())
-            ].copy()
-            
-            if not drv_laps_preview.empty:
-                cur = drv_laps_preview[drv_laps_preview['LapNumber'] == lap_number]
-                if cur.empty:
-                    avail = drv_laps_preview['LapNumber'].values
-                    nearest_l = avail[np.argmin(np.abs(avail - lap_number))]
-                    cur = drv_laps_preview[drv_laps_preview['LapNumber'] == nearest_l]
-                
-                if not cur.empty:
-                    cur_time = float(cur['LapTime_s'].iloc[0])
-                    tyre_life = int(cur['TyreLife'].iloc[0]) if pd.notna(cur['TyreLife'].iloc[0]) else 1
-                    stint_start_lap = lap_number - tyre_life + 1
-                    stint = drv_laps_preview[drv_laps_preview['LapNumber'] >= stint_start_lap]['LapTime_s']
-                    best_in_stint = float(stint.min()) if not stint.empty else cur_time
-                    actual_delta_val = max(0.0, cur_time - best_in_stint)
-                    st.session_state['actual_lap_delta'] = round(actual_delta_val, 3)
-                    # Update override widget
-                    st.session_state['lap_delta_override'] = round(actual_delta_val, 3)
-        except Exception:
-            pass
+# Build a key representing the current race selection
+# Only sync actual values to widgets when selection changes
+current_selection_key = f"{season}_{grand_prix}_{driver}_{lap_number}"
+
+if session_data is not None:
+    try:
+        gap_ctx = get_actual_gap_context(
+            session_data['laps'], driver, lap_number)
+        if gap_ctx:
+            st.session_state['actual_gap_ahead'] = gap_ctx['gap_ahead']
+            st.session_state['actual_gap_behind'] = gap_ctx['gap_behind']
+            st.session_state['actual_position'] = gap_ctx['position']
+            st.session_state['actual_driver_ahead'] = gap_ctx['driver_ahead']
+            st.session_state['actual_driver_behind'] = gap_ctx['driver_behind']
+
+            # Only push to widget keys when selection changes
+            # This prevents overwriting user edits on every render
+            if st.session_state.get(
+                '_last_selection_key') != current_selection_key:
+                st.session_state['gap_ahead_override'] = float(
+                    gap_ctx['gap_ahead'])
+                st.session_state['gap_behind_override'] = float(
+                    gap_ctx['gap_behind'])
+
+        # Compute actual lap_time_delta
+        drv_laps_preview = session_data['laps'][
+            (session_data['laps']['Driver'] == driver) &
+            (session_data['laps']['LapTime_s'].notna())
+        ].copy()
+
+        if not drv_laps_preview.empty:
+            cur = drv_laps_preview[
+                drv_laps_preview['LapNumber'] == lap_number]
+            if cur.empty:
+                avail = drv_laps_preview['LapNumber'].values
+                nearest_l = avail[
+                    np.argmin(np.abs(avail - lap_number))]
+                cur = drv_laps_preview[
+                    drv_laps_preview['LapNumber'] == nearest_l]
+
+            if not cur.empty:
+                cur_time = float(cur['LapTime_s'].iloc[0])
+                tyre_life = int(
+                    cur['TyreLife'].iloc[0]
+                ) if pd.notna(cur['TyreLife'].iloc[0]) else 1
+                stint_start_lap = lap_number - tyre_life + 1
+                stint = drv_laps_preview[
+                    drv_laps_preview['LapNumber'] >=
+                    stint_start_lap]['LapTime_s']
+                best_in_stint = float(
+                    stint.min()) if not stint.empty else cur_time
+                actual_delta_val = max(
+                    0.0, cur_time - best_in_stint)
+                st.session_state['actual_lap_delta'] = round(
+                    actual_delta_val, 3)
+
+                # Only push lap_delta to widget when selection changes
+                if st.session_state.get(
+                    '_last_selection_key') != current_selection_key:
+                    st.session_state['lap_delta_override'] = round(
+                        actual_delta_val, 3)
+
+        # Record that we've synced for this selection
+        st.session_state['_last_selection_key'] = current_selection_key
+
+    except Exception:
+        pass
 
 # Default to cached data if Analyse wasn't clicked this run
 if session_data is None:
@@ -1194,15 +1222,44 @@ with tab1:
                        f"They may not have participated in this event.")
         else:
             # Build race state with sidebar overrides applied
+            # When compound is overridden, estimate lap_time_delta
+            # from tyre model for the new compound rather than
+            # using the actual race value which belongs to a 
+            # different compound
+            selected_compound = st.session_state.get(
+                'compound_override', lap_data['compound'])
+            actual_race_compound = lap_data['compound']
+            user_delta = st.session_state.get(
+                'lap_delta_override', lap_data['lap_time_delta'])
+
+            if selected_compound != actual_race_compound:
+                # Compound changed — estimate delta from tyre model
+                from src.tyre_model import predict_lap_delta as _pld
+                COMP_ENC = {
+                    'SOFT': 2, 'MEDIUM': 1, 'HARD': 0,
+                    'INTERMEDIATE': 3, 'WET': 4
+                }
+                enc = COMP_ENC.get(selected_compound, 1)
+                tyre_age_val = lap_data['tyre_age']
+                estimated_delta = float(
+                    _pld(enc, tyre_age_val))
+                effective_lap_delta = estimated_delta
+                # Also update the sidebar display value
+                st.session_state['lap_delta_override'] = round(
+                    estimated_delta, 3)
+                st.session_state['actual_lap_delta'] = round(
+                    estimated_delta, 3)
+            else:
+                effective_lap_delta = user_delta
+
             race_state = build_race_state_from_overrides(
                 tyre_age=lap_data['tyre_age'],
-                compound=st.session_state.get('compound_override', lap_data['compound']),
+                compound=selected_compound,
                 lap_number=effective_lap,
                 total_laps=actual_total,
                 position=lap_data['position'],
                 deg_rate=lap_data['deg_rate'],
-                # Use the override value directly from sidebar
-                lap_time_delta=st.session_state.get('lap_delta_override', lap_data['lap_time_delta']),
+                lap_time_delta=effective_lap_delta,
                 track_temp=lap_data['track_temp'],
                 fuel_adjusted_laptime=lap_data['fuel_adjusted_laptime']
             )
