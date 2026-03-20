@@ -90,9 +90,35 @@ st.markdown("""
 @st.cache_data
 def get_race_schedule(season):
     import fastf1
-    schedule = fastf1.get_event_schedule(season)
-    races = schedule[schedule['EventFormat'] == 'conventional']['EventName'].tolist()
-    return races
+    cache_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        'data', 'raw'
+    )
+    os.makedirs(cache_dir, exist_ok=True)
+    fastf1.Cache.enable_cache(cache_dir)
+    try:
+        schedule = fastf1.get_event_schedule(season)
+        # EventFormat can be 'conventional', 'sprint',
+        # 'sprint_shootout', 'sprint_qualifying' — exclude testing only
+        races = schedule[
+            schedule['EventFormat'] != 'testing'
+        ]['EventName'].tolist()
+        return races
+    except Exception as e:
+        # Return a sensible fallback so sidebar doesn't crash
+        return [
+            'Bahrain Grand Prix', 'Saudi Arabian Grand Prix',
+            'Australian Grand Prix', 'Japanese Grand Prix',
+            'Chinese Grand Prix', 'Miami Grand Prix',
+            'Monaco Grand Prix', 'Canadian Grand Prix',
+            'Spanish Grand Prix', 'Austrian Grand Prix',
+            'British Grand Prix', 'Hungarian Grand Prix',
+            'Belgian Grand Prix', 'Dutch Grand Prix',
+            'Italian Grand Prix', 'Singapore Grand Prix',
+            'United States Grand Prix', 'Mexico City Grand Prix',
+            'São Paulo Grand Prix', 'Las Vegas Grand Prix',
+            'Qatar Grand Prix', 'Abu Dhabi Grand Prix'
+        ]
 
 
 @st.cache_data(show_spinner=False)
@@ -145,6 +171,8 @@ def load_race_session(season, grand_prix):
             'weather_data': weather
         }
     except Exception as e:
+        # Store error for UI display
+        st.session_state['_load_error'] = str(e)
         return None
 
 
@@ -244,8 +272,10 @@ def build_race_state_from_overrides(
     effective_deg = deg_rate * 0.5 if st.session_state.vsc else deg_rate
     effective_compound = 'INTERMEDIATE' if st.session_state.rain else compound
     
-    # Apply pace delta override from sidebar
-    effective_lap_delta = lap_time_delta + st.session_state.get('pace_delta_override', 0.0)
+    # Use the sidebar lap_delta_override value directly
+    # (lap_delta_override key was a stale reference — fixed)
+    effective_lap_delta = st.session_state.get(
+        'lap_delta_override', lap_time_delta)
 
     return {
         'tyre_age': tyre_age,
@@ -917,20 +947,38 @@ grand_prix = st.sidebar.selectbox(
     key="grand_prix"
 )
 
-DRIVERS_2024 = ['VER', 'PER', 'LEC', 'SAI', 'NOR', 'PIA',
-                'HAM', 'RUS', 'ALO', 'STR', 'GAS', 'OCO',
-                'TSU', 'RIC', 'MAG', 'HUL', 'BOT', 'ZHO',
-                'ALB', 'SAR']
+# Full driver list covering 2022, 2023, 2024 grids
+# so all seasons are accessible
+ALL_DRIVERS_GRID = [
+    'VER', 'PER', 'LEC', 'SAI', 'HAM', 'RUS',
+    'NOR', 'PIA', 'ALO', 'STR', 'GAS', 'OCO',
+    'TSU', 'RIC', 'ALB', 'MAG', 'HUL', 'BOT',
+    'ZHO', 'LAW', 'SAR', 'BEA', 'ANT', 'HAD',
+    # 2022 drivers
+    'VET', 'MSC', 'LAT', 'MAZ',
+    # 2023 additions
+    'DEV', 'SAR'
+]
 
 driver = st.sidebar.selectbox(
-    "Driver", DRIVERS_2024, key="driver"
+    "Driver", ALL_DRIVERS_GRID, key="driver"
 )
 
 # Section 3 — Lap selector
 st.sidebar.markdown("### 📍 Lap")
+# Max laps is dynamic — Monaco has 78, others vary
+# Default to 70 until race loads, then update
+_session_max = 70
+if st.session_state.get('loaded_session_data') is not None:
+    _session_max = int(
+        st.session_state['loaded_session_data'].get(
+            'total_laps', 70))
+
 lap_number = st.sidebar.slider(
-    "Current Lap", min_value=1, max_value=70,
-    value=30, key="lap_number"
+    "Current Lap", min_value=1,
+    max_value=max(70, _session_max),
+    value=min(30, max(70, _session_max)),
+    key="lap_number"
 )
 
 # --- ANALYSE BUTTON AND LOADING LOGIC ---
@@ -1222,16 +1270,25 @@ tab1, tab2 = st.tabs([
 
 with tab1:
     if session_data is None:
-        # Default state before any race is loaded
-        st.markdown("""
-        <div style="text-align:center; padding:60px 20px; color:#555;">
-            <div style="font-size:3rem; margin-bottom:16px;">🏁</div>
-            <h3 style="color:#888;">Select a race, driver, and lap in the sidebar</h3>
-            <p style="color:#555;">
-                Load race data to see real-time strategy recommendations.<br>
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
+        err = st.session_state.get('_load_error', '')
+        if err:
+            st.error(
+                f"Could not load **{grand_prix} {season}**.\n\n"
+                f"Reason: `{err}`\n\n"
+                "Try a different race or season. "
+                "First load fetches live from FastF1 (~30–60s)."
+            )
+        else:
+            st.markdown("""
+            <div style="text-align:center; padding:60px 20px; color:#555;">
+                <div style="font-size:3rem; margin-bottom:16px;">🏁</div>
+                <h3 style="color:#888;">Select a race, driver, and lap in the sidebar</h3>
+                <p style="color:#555;">
+                    Load race data to see real-time strategy recommendations.<br>
+                    First load of each race takes ~30–60 seconds.
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
     else:
         # Extract driver data at selected lap
         actual_total = session_data['total_laps']
