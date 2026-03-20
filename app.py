@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px
 from datetime import datetime
 import json, os, sys
 
@@ -101,7 +100,12 @@ def load_race_session(season, grand_prix):
     Returns None if loading fails.
     """
     import fastf1
-    fastf1.Cache.enable_cache('data/raw/')
+    cache_dir = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 
+    'data', 'raw'
+    )
+    os.makedirs(cache_dir, exist_ok=True)
+    fastf1.Cache.enable_cache(cache_dir)
     try:
         session = fastf1.get_session(season, grand_prix, 'R')
         session.load(telemetry=False, weather=True, messages=False)
@@ -174,8 +178,19 @@ def get_driver_lap_data(session_data, driver, lap_number):
         x = np.arange(len(stint_laps[-3:]))
         deg_rate = float(np.polyfit(x, stint_laps[-3:], 1)[0])
         deg_rate = max(0.0, deg_rate)
+        # Fallback: if polyfit gives near-zero but lap_time_delta
+        # shows real degradation, use delta/age as proxy
+        if deg_rate < 0.005 and tyre_age > 3:
+            delta_proxy = float(stint_laps[-1] - np.min(stint_laps))
+            deg_rate = round(delta_proxy / max(tyre_age, 1), 4)
     else:
-        deg_rate = 0.05
+        # With fewer than 3 laps use lap_time_delta / age
+        if tyre_age > 1 and len(stint_laps) > 1:
+            delta_proxy = float(stint_laps[-1] - np.min(stint_laps))
+            deg_rate = round(delta_proxy / max(tyre_age - 1, 1), 4)
+        else:
+            deg_rate = 0.05
+    deg_rate = max(0.0, min(deg_rate, 0.5))
 
     if len(stint_laps) > 0:
         lap_time_delta = float(stint_laps[-1] - np.min(stint_laps)) if pd.notna(row['LapTime_s']) else 1.0
@@ -684,7 +699,9 @@ def render_tyre_simulation(compound_selected, tyre_age_current, base_laptime, la
 
         trace_visible = True if visible else 'legendonly'
         
-        ages = list(range(0, cfg['max_age'] + 1))
+        # Start from current tyre age so chart shows future only
+        start_age = max(0, tyre_age_current - 1)
+        ages = list(range(start_age, cfg['max_age'] + 1))
         
         if manual_deg_rate is not None and compound == compound_selected:
             # Blend: use manual deg_rate as linear component, tyre model for curve shape
@@ -767,7 +784,11 @@ def render_tyre_simulation(compound_selected, tyre_age_current, base_laptime, la
                   f"Critical in ~{laps_left_on_tyre} laps  |  Pit recovery: ~{sel_recovery} laps"),
             font=dict(color='#888888', size=11)
         ),
-        xaxis=dict(title="Tyre age (laps)", gridcolor='#1a1a1a', color='#888888', dtick=5),
+        xaxis=dict(
+            title="Tyre age (laps)",
+            gridcolor='#1a1a1a', color='#888888', dtick=5,
+            range=[max(0, tyre_age_current - 1), None]
+        ),
         yaxis=dict(title="Pace loss vs fresh tyre (s)", gridcolor='#1a1a1a', color='#888888'),
         legend=dict(bgcolor='rgba(26,26,26,0.8)', font=dict(color='#888888', size=10),
                     bordercolor='#333', borderwidth=1)
@@ -1511,11 +1532,11 @@ with tab2:
         else:
             st.warning("🔭 **STAY OUT LONGER**")
 
-    # 3. Final Comparison (Best Compound)
+    # 3. Final Comparison (Best Compound — % Recommendation)
     st.markdown("---")
     comp_col_left, comp_col_right = st.columns([3, 2])
     with comp_col_left:
-        st.markdown("**Best compound for remaining stint**")
+        st.markdown("**Compound recommendation — % advantage over staying out**")
         PIT_LOSS_COMP = 22.0
         COMP_ANALYSIS = {
             'SOFT': {'enc': 2, 'color': '#E8002D', 'warmup_laps': 2, 'peak_gain': 1.8},
@@ -1526,43 +1547,128 @@ with tab2:
         for cname, cfg in COMP_ANALYSIS.items():
             total = PIT_LOSS_COMP
             lap_times_list = []
-            for l in range(1, manual_laps_remaining+1):
-                gain = cfg['peak_gain'] * (1 - l / cfg['warmup_laps']) if l <= cfg['warmup_laps'] else 0.0
+            for l in range(1, manual_laps_remaining + 1):
+                gain = cfg['peak_gain'] * (1 - l / cfg['warmup_laps']) \
+                    if l <= cfg['warmup_laps'] else 0.0
                 deg = float(predict_lap_delta(cfg['enc'], l))
                 lt = manual_lap_time - gain + deg
                 total += lt
                 lap_times_list.append(lt)
             stint_details[cname] = {'total': total, 'color': cfg['color']}
-        
-        stay_total_comp = manual_laps_remaining * manual_lap_time + manual_deg_rate * (manual_laps_remaining * (manual_laps_remaining + 1) / 2)
-        stint_details['STAY OUT'] = {'total': stay_total_comp, 'color': '#888888'}
-        
+
+        stay_total_comp = (
+            manual_laps_remaining * manual_lap_time
+            + manual_deg_rate * (manual_laps_remaining * (manual_laps_remaining + 1) / 2)
+        )
+        stint_details['STAY OUT'] = {'total': stay_total_comp, 'color': '#555555'}
+
         sorted_options = sorted(stint_details.items(), key=lambda x: x[1]['total'])
-        best_option, best_total = sorted_options[0][0], sorted_options[0][1]['total']
-        
-        fig_best = go.Figure()
-        fig_best.add_trace(go.Bar(
-            x=[s[0] for s in sorted_options],
-            y=[s[1]['total'] for s in sorted_options],
-            marker_color=[s[1]['color'] for s in sorted_options],
-            text=["BEST ✅" if s[1]['total'] == best_total else f"+{s[1]['total']-best_total:.1f}s" for s in sorted_options],
-            textposition='outside', textfont=dict(size=10)
+        best_option = sorted_options[0][0]
+        best_total = sorted_options[0][1]['total']
+
+        # Compute % time saving vs stay out for each pit option
+        # Positive = saves time vs staying out
+        # Only show pit options (not STAY OUT itself) in the chart
+        pit_options = {k: v for k, v in stint_details.items() if k != 'STAY OUT'}
+        savings_vs_stay = {
+            k: stay_total_comp - v['total']
+            for k, v in pit_options.items()
+        }
+        # Convert savings to percentage of total race time
+        pct_savings = {
+            k: round((s / stay_total_comp) * 100, 2)
+            for k, s in savings_vs_stay.items()
+        }
+
+        # Normalise to positive recommendation scores
+        # Shift so minimum is 0, then compute % share
+        min_pct = min(pct_savings.values())
+        shifted = {k: v - min_pct + 0.5 for k, v in pct_savings.items()}
+        total_shifted = sum(shifted.values())
+        rec_pct = {k: round(v / total_shifted * 100, 1) for k, v in shifted.items()}
+
+        labels = list(rec_pct.keys())
+        values = list(rec_pct.values())
+        colors = [pit_options[k]['color'] for k in labels]
+
+        fig_donut = go.Figure(go.Pie(
+            labels=labels,
+            values=values,
+            hole=0.55,
+            marker=dict(
+                colors=colors,
+                line=dict(color='#1a1a1a', width=2)
+            ),
+            textinfo='label+percent',
+            textfont=dict(color='white', size=12),
+            hovertemplate=(
+                "<b>%{label}</b><br>"
+                "Recommendation: %{percent}<br>"
+                "<extra></extra>"
+            )
         ))
-        fig_best.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=220, margin=dict(l=40, r=10, t=30, b=40), showlegend=False)
-        st.plotly_chart(fig_best, use_container_width=True)
+
+        # Centre annotation — best compound
+        fig_donut.add_annotation(
+            text=f"<b>{best_option}</b><br>recommended",
+            x=0.5, y=0.5,
+            font=dict(size=13, color='white'),
+            showarrow=False
+        )
+        fig_donut.update_layout(
+            paper_bgcolor='rgba(0,0,0,0)',
+            height=260,
+            margin=dict(l=10, r=10, t=20, b=10),
+            showlegend=True,
+            legend=dict(
+                bgcolor='rgba(0,0,0,0)',
+                font=dict(color='#888888', size=11),
+                orientation='v',
+                x=1.0, y=0.5
+            )
+        )
+        st.plotly_chart(fig_donut, use_container_width=True)
+        st.caption(
+            "% share = relative advantage of each compound vs staying out. "
+            "Higher % = stronger recommendation to pit for that compound."
+        )
 
     with comp_col_right:
         st.markdown("**Stint Verdict**")
-        saving = sorted_options[1][1]['total'] - best_total if len(sorted_options) > 1 else 0
-            
-        st.write(f"The fastest strategy for the remaining {manual_laps_remaining} laps is to **{best_option}**.")
-        if best_option != 'STAY OUT':
-            st.info(f"Pitting for fresh **{best_option}** tyres saves **{saving:.1f}s** over staying out, even including the 22s pit loss.")
+        # sorted_options includes STAY OUT — find best pit option
+        pit_sorted = [(k, v) for k, v in sorted_options if k != 'STAY OUT']
+        best_pit = pit_sorted[0] if pit_sorted else None
+        saving = stay_total_comp - best_pit[1]['total'] if best_pit else 0
+
+        if best_option != 'STAY OUT' and saving > 0:
+            st.info(
+                f"Pitting for fresh **{best_option}** tyres saves "
+                f"**{saving:.1f}s** over staying out, including 22s pit loss."
+            )
+        elif best_option != 'STAY OUT' and saving <= 0:
+            st.warning(
+                f"Pitting for **{best_option}** costs "
+                f"**{abs(saving):.1f}s** more than staying out."
+            )
         else:
-            st.warning(f"Staying out remains faster by **{saving:.1f}s** than pitting for any other compound.")
-            
+            st.warning(
+                f"Staying out remains faster than pitting for any compound."
+            )
+
+        if best_pit:
+            st.markdown("**Time vs stay out:**")
+            for k, v in pit_sorted:
+                diff = stay_total_comp - v['total']
+                arrow = "🟢" if diff > 0 else "🔴"
+                st.markdown(
+                    f"{arrow} **{k}**: "
+                    f"{'saves' if diff > 0 else 'costs'} "
+                    f"**{abs(diff):.1f}s**"
+                )
+
         st.caption(
-            "⚠️ **Note**: Stint verdict is purely mathematical. It calculates total race time (base pace + accumulative degradation) based on the exact manual values provided above, assuming linear pace loss."
+            "⚠️ Mathematical estimate only. "
+            "Assumes linear deg + 22s pit loss."
         )
 
     # --- END TAB 2 CONTENT ---
