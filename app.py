@@ -140,13 +140,49 @@ def load_race_session(season, grand_prix):
         session.load(telemetry=False, weather=True, messages=False)
         laps = session.laps.copy()
 
+        # Some FastF1 sessions (especially 2022) store driver data
+        # differently. Normalise the DataFrame unconditionally.
+        laps = laps.reset_index(drop=False)
+
+        # If Driver abbreviation column is missing but DriverNumber
+        # exists, build the proper abbreviation mapping from session
+        if 'Driver' not in laps.columns and \
+                'DriverNumber' in laps.columns:
+            try:
+                # Build number → 3-letter abbreviation map
+                drv_map = {}
+                for drv in session.drivers:
+                    info = session.get_driver(drv)
+                    num = str(info.get('DriverNumber',
+                                       info.get('number', drv)))
+                    abbr = info.get('Abbreviation',
+                                    info.get('abbreviation',
+                                             str(drv)))
+                    drv_map[num] = abbr
+                laps['Driver'] = laps['DriverNumber'].astype(
+                    str).map(drv_map).fillna(
+                    laps['DriverNumber'].astype(str))
+            except Exception:
+                # Final fallback: use number as string identifier
+                # (driver selector will show numbers not names)
+                laps['Driver'] = laps['DriverNumber'].astype(str)
+
         cols_needed = [
             'Driver', 'LapNumber', 'Compound',
             'TyreLife', 'LapTime', 'Position',
             'PitInTime', 'PitOutTime',
             'Sector1Time', 'Sector2Time', 'Sector3Time'
         ]
-        laps = laps[cols_needed].copy()
+        # Only keep columns that actually exist — older FastF1
+        # data (2022) may be missing some cols
+        cols_available = [c for c in cols_needed if c in laps.columns]
+        laps = laps[cols_available].copy()
+
+        # Fill any missing expected columns with NaN so downstream
+        # code doesn't crash on absent data
+        for col in cols_needed:
+            if col not in laps.columns:
+                laps[col] = pd.NA
 
         # Convert LapTime to seconds
         laps['LapTime_s'] = laps['LapTime'].dt.total_seconds()
