@@ -951,9 +951,9 @@ if session_data is not None:
             # This prevents overwriting user edits on every render
             if st.session_state.get(
                 '_last_selection_key') != current_selection_key:
-                st.session_state['gap_ahead_override'] = float(
+                st.session_state['actual_gap_ahead'] = float(
                     gap_ctx['gap_ahead'])
-                st.session_state['gap_behind_override'] = float(
+                st.session_state['actual_gap_behind'] = float(
                     gap_ctx['gap_behind'])
 
         # Compute actual lap_time_delta
@@ -988,10 +988,10 @@ if session_data is not None:
                 st.session_state['actual_lap_delta'] = round(
                     actual_delta_val, 3)
 
-                # Only push lap_delta to widget when selection changes
+                # Only update display reference, not widget key
                 if st.session_state.get(
                     '_last_selection_key') != current_selection_key:
-                    st.session_state['lap_delta_override'] = round(
+                    st.session_state['actual_lap_delta'] = round(
                         actual_delta_val, 3)
 
         # Record that we've synced for this selection
@@ -1070,12 +1070,14 @@ st.sidebar.caption("Simulate competitor stops or pace changes")
 gap_ahead_override = st.sidebar.number_input(
     "Gap to car ahead (s)",
     min_value=0.0, max_value=60.0,
+    value=float(st.session_state.get('actual_gap_ahead', 3.0)),
     step=0.1,
     key="gap_ahead_override"
 )
 gap_behind_override = st.sidebar.number_input(
     "Gap to car behind (s)",
     min_value=0.0, max_value=60.0,
+    value=float(st.session_state.get('actual_gap_behind', 3.0)),
     step=0.1,
     key="gap_behind_override"
 )
@@ -1098,6 +1100,7 @@ if actual_delta is not None:
 lap_delta_override = st.sidebar.number_input(
     "Pace loss (s/lap)",
     min_value=0.0, max_value=10.0,
+    value=float(st.session_state.get('actual_lap_delta', 1.0)),
     step=0.1,
     format="%.3f",
     key="lap_delta_override",
@@ -1244,9 +1247,7 @@ with tab1:
                 estimated_delta = float(
                     _pld(enc, tyre_age_val))
                 effective_lap_delta = estimated_delta
-                # Also update the sidebar display value
-                st.session_state['lap_delta_override'] = round(
-                    estimated_delta, 3)
+                # Update display reference only — NOT the widget key
                 st.session_state['actual_lap_delta'] = round(
                     estimated_delta, 3)
             else:
