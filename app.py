@@ -1005,7 +1005,7 @@ st.sidebar.markdown("""
 st.sidebar.markdown("### 🏆 Race Selection")
 
 season = st.sidebar.selectbox(
-    "Season", [2024, 2023, 2022], index=0,
+    "Season", [2024, 2023], index=0,
     key="season"
 )
 
@@ -1014,17 +1014,13 @@ grand_prix = st.sidebar.selectbox(
     key="grand_prix"
 )
 
-# Full driver list covering 2022, 2023, 2024 grids
-# so all seasons are accessible
+# Full driver list covering 2023-2024 grids
 ALL_DRIVERS_GRID = [
     'VER', 'PER', 'LEC', 'SAI', 'HAM', 'RUS',
     'NOR', 'PIA', 'ALO', 'STR', 'GAS', 'OCO',
     'TSU', 'RIC', 'ALB', 'MAG', 'HUL', 'BOT',
     'ZHO', 'LAW', 'SAR', 'BEA', 'ANT', 'HAD',
-    # 2022 drivers
-    'VET', 'MSC', 'LAT', 'MAZ',
-    # 2023 additions
-    'DEV', 'SAR'
+    'VET', 'MSC', 'LAT', 'DEV', 'COL'
 ]
 
 driver = st.sidebar.selectbox(
@@ -1296,7 +1292,7 @@ st.sidebar.markdown("""
 <div style="color:#555; font-size:0.72rem; 
             text-align:center; padding:8px;">
     Built with FastF1 · XGBoost · Streamlit<br>
-    Data: 2022–2024 F1 Seasons<br>
+    Data: 2023–2024 F1 Seasons<br>
     65,001 training examples
 </div>
 """, unsafe_allow_html=True)
@@ -1524,7 +1520,7 @@ with tab2:
     st.markdown("#### 🏆 Race Reference")
     t2_col1, t2_col2 = st.columns(2)
     with t2_col1:
-        t2_season = st.selectbox("Season", [2024, 2023, 2022], index=0, key="t2_season")
+        t2_season = st.selectbox("Season", [2024, 2023], index=0, key="t2_season")
     with t2_col2:
         t2_gp = st.selectbox("Grand Prix", list(RACE_TOTAL_LAPS.keys()), index=0, key="t2_gp")
 
