@@ -102,8 +102,13 @@ def get_race_schedule(season):
         # 'sprint_shootout', 'sprint_qualifying' — exclude testing only
         races = schedule[
             schedule['EventFormat'] != 'testing'
-        ]['EventName'].tolist()
-        return races
+        ]
+        
+        # For 2024, FastF1 3.3.9 reliably supports up to Round 22 (Las Vegas)
+        if season == 2024:
+            races = races[races['RoundNumber'] <= 22]
+            
+        return races['EventName'].tolist()
     except Exception as e:
         # Return a sensible fallback so sidebar doesn't crash
         return [
@@ -137,7 +142,24 @@ def load_race_session(season, grand_prix):
     fastf1.Cache.enable_cache(cache_dir)
     try:
         session = fastf1.get_session(season, grand_prix, 'R')
-        session.load(telemetry=False, weather=True, messages=False)
+        import fastf1.logger
+        fastf1.logger.set_log_level('WARNING')
+        
+        try:
+            session.load(
+                telemetry=False,
+                weather=True,
+                messages=False,
+                livedata=None
+            )
+        except Exception:
+            # Some sessions fail driver_info fetch —
+            # try loading with minimal options
+            session.load(
+                telemetry=False,
+                weather=False,
+                messages=False
+            )
         laps = session.laps.copy()
 
         # Some FastF1 sessions (especially 2022) store driver data
@@ -207,8 +229,17 @@ def load_race_session(season, grand_prix):
             'weather_data': weather
         }
     except Exception as e:
-        # Store error for UI display
-        st.session_state['_load_error'] = str(e)
+        error_msg = str(e)
+        if 'SessionNotAvailableError' in error_msg or \
+           'No data for this session' in error_msg:
+            st.session_state['_load_error'] = (
+                f"No data available for {grand_prix} {season} "
+                f"in FastF1 v3.3.9. Try a different race or "
+                f"season — Bahrain, Monaco, Abu Dhabi are "
+                f"most reliable."
+            )
+        else:
+            st.session_state['_load_error'] = error_msg
         return None
 
 
